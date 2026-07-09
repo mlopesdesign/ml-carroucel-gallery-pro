@@ -1,0 +1,294 @@
+/* =============================================
+   ML Carousel Gallery Pro — Frontend CSS v1.1.0
+   ============================================= */
+
+/* ── Defaults via CSS vars (overridden inline by PHP) ── */
+.mlcgp-wrapper {
+	--mlcgp-gap: 0px;
+	--mlcgp-card-width: 0px;
+	--mlcgp-card-height: 0px;
+	--mlcgp-overlay-opacity: 0.55;
+
+	position: relative;
+	width: 100%;
+	overflow: hidden;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+/* ── Track ──────────────────────────────────── */
+
+.mlcgp-track-outer {
+	overflow: hidden;
+	width: 100%;
+}
+
+/* Center mode: reveal side slides */
+.mlcgp-center-mode .mlcgp-track-outer {
+	overflow: visible;
+}
+.mlcgp-center-mode {
+	overflow: hidden;
+}
+
+.mlcgp-track {
+	display: flex;
+	transition: transform 0.55s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+	will-change: transform;
+	backface-visibility: hidden;
+	gap: var(--mlcgp-gap);
+}
+
+/* ── Slides ─────────────────────────────────── */
+
+.mlcgp-slide {
+	flex: 0 0 calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-desktop) - 1))) / var(--mlcgp-visible-desktop));
+	min-width: calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-desktop) - 1))) / var(--mlcgp-visible-desktop));
+	box-sizing: border-box;
+}
+
+/* Center mode: narrower slides to show neighbors */
+.mlcgp-center-mode .mlcgp-slide {
+	flex: 0 0 calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-desktop) - 1))) / var(--mlcgp-visible-desktop));
+	min-width: calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-desktop) - 1))) / var(--mlcgp-visible-desktop));
+	transition: opacity 0.4s ease, transform 0.4s ease;
+	opacity: 0.55;
+	transform: scale(0.94);
+}
+
+.mlcgp-center-mode .mlcgp-slide.is-center {
+	opacity: 1;
+	transform: scale(1);
+}
+
+/* ── Card ───────────────────────────────────── */
+
+.mlcgp-card {
+	display: block;
+	position: relative;
+	width: 100%;
+	overflow: hidden;
+	text-decoration: none;
+	color: inherit;
+	background: #111;
+}
+
+/* Height: use variable if set, otherwise aspect-ratio 16:9 */
+.mlcgp-card {
+	aspect-ratio: 16 / 9;
+}
+/* When card_height is explicitly set (JS reads var and applies fixed height) */
+.mlcgp-card[style*="--mlcgp-card-height"] {
+	aspect-ratio: unset;
+}
+
+.mlcgp-card__img {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+	transition: transform 0.4s ease;
+}
+
+.mlcgp-card:hover .mlcgp-card__img {
+	transform: scale(1.04);
+}
+
+.mlcgp-card__placeholder {
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+}
+
+/* ── Overlay ─────────────────────────────────── */
+
+.mlcgp-card__overlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 1;
+}
+
+/* Default overlay: bottom-weighted gradient */
+.mlcgp-card__overlay {
+	background: linear-gradient(
+		to top,
+		rgba(0, 0, 0, var(--mlcgp-overlay-opacity)) 0%,
+		rgba(0, 0, 0, calc(var(--mlcgp-overlay-opacity) * 0.55)) 45%,
+		rgba(0, 0, 0, calc(var(--mlcgp-overlay-opacity) * 0.1)) 100%
+	);
+}
+
+/* Overlay adapts for top-text: gradient from top */
+.mlcgp-text-top .mlcgp-card__overlay {
+	background: linear-gradient(
+		to bottom,
+		rgba(0, 0, 0, var(--mlcgp-overlay-opacity)) 0%,
+		rgba(0, 0, 0, calc(var(--mlcgp-overlay-opacity) * 0.55)) 45%,
+		rgba(0, 0, 0, calc(var(--mlcgp-overlay-opacity) * 0.1)) 100%
+	);
+}
+
+/* Overlay for center-text: uniform dark layer */
+.mlcgp-text-center .mlcgp-card__overlay {
+	background: rgba(0, 0, 0, calc(var(--mlcgp-overlay-opacity) * 0.75));
+}
+
+/* ── Text Block ──────────────────────────────── */
+
+.mlcgp-card__text {
+	position: absolute;
+	left: 0;
+	right: 0;
+	z-index: 2;
+	padding: 16px 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	pointer-events: none;
+}
+
+/* Vertical position */
+.mlcgp-text-bottom .mlcgp-card__text {
+	bottom: 0;
+	top: auto;
+	transform: none;
+}
+
+.mlcgp-text-top .mlcgp-card__text {
+	top: 0;
+	bottom: auto;
+	transform: none;
+}
+
+.mlcgp-text-center .mlcgp-card__text {
+	top: 50%;
+	bottom: auto;
+	transform: translateY(-50%);
+}
+
+/* Horizontal alignment */
+.mlcgp-align-left .mlcgp-card__text {
+	align-items: flex-start;
+	text-align: left;
+}
+
+.mlcgp-align-center .mlcgp-card__text {
+	align-items: center;
+	text-align: center;
+}
+
+.mlcgp-align-right .mlcgp-card__text {
+	align-items: flex-end;
+	text-align: right;
+}
+
+/* ── Title & Date ───────────────────────────── */
+
+.mlcgp-card__title {
+	display: block;
+	font-size: clamp(0.75rem, 1.4vw, 1.05rem);
+	font-weight: 700;
+	color: #ffffff;
+	letter-spacing: 0.08em;
+	line-height: 1.25;
+	text-transform: uppercase;
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+	overflow: hidden;
+	max-width: 100%;
+}
+
+.mlcgp-card__title-line {
+	display: block;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+
+.mlcgp-card__date {
+	display: block;
+	font-size: clamp(0.65rem, 1.1vw, 0.85rem);
+	color: rgba(255, 255, 255, 0.80);
+	letter-spacing: 0.04em;
+	font-weight: 400;
+	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Navigation Arrows ───────────────────────── */
+
+.mlcgp-nav {
+	position: absolute;
+	top: 50%;
+	transform: translateY(-50%);
+	z-index: 10;
+	background: rgba(0, 0, 0, 0.55);
+	border: none;
+	border-radius: 50%;
+	width: 44px;
+	height: 44px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	color: #fff;
+	transition: background 0.2s ease;
+	padding: 0;
+	line-height: 1;
+}
+
+.mlcgp-nav:hover {
+	background: rgba(0, 0, 0, 0.82);
+}
+
+.mlcgp-nav:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 2px;
+}
+
+.mlcgp-nav--prev { left: 10px; }
+.mlcgp-nav--next { right: 10px; }
+
+.mlcgp-nav svg {
+	width: 20px;
+	height: 20px;
+	display: block;
+}
+
+/* ── Empty state ─────────────────────────────── */
+
+.mlcgp-empty {
+	padding: 24px;
+	text-align: center;
+	color: #666;
+}
+
+/* ── Responsive ──────────────────────────────── */
+
+@media (max-width: 900px) {
+	.mlcgp-slide {
+		flex: 0 0 calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-tablet) - 1))) / var(--mlcgp-visible-tablet));
+		min-width: calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-tablet) - 1))) / var(--mlcgp-visible-tablet));
+	}
+	.mlcgp-center-mode .mlcgp-slide {
+		flex: 0 0 calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-tablet) - 1))) / var(--mlcgp-visible-tablet));
+		min-width: calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-tablet) - 1))) / var(--mlcgp-visible-tablet));
+	}
+}
+
+@media (max-width: 600px) {
+	.mlcgp-slide,
+	.mlcgp-center-mode .mlcgp-slide {
+		flex: 0 0 calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-mobile) - 1))) / var(--mlcgp-visible-mobile));
+		min-width: calc((100% - (var(--mlcgp-gap) * (var(--mlcgp-visible-mobile) - 1))) / var(--mlcgp-visible-mobile));
+		opacity: 1;
+		transform: none;
+	}
+
+	.mlcgp-nav {
+		width: 36px;
+		height: 36px;
+	}
+}
