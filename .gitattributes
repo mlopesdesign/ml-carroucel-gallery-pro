@@ -1,0 +1,15 @@
+# Normaliza finais de linha para evitar que ficheiros gravados em Windows (CRLF)
+# quebrem os scripts executados no runner Linux do GitHub Actions.
+* text=auto
+
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+*.ps1  text eol=crlf
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.zip  binary
