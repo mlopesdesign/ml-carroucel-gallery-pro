@@ -3,7 +3,7 @@
  * Plugin Name: ML Carousel Gallery Pro
  * Plugin URI: https://mlopesdesign.com/
  * Description: Carousel horizontal de galerias do ML Gallery Pro com autoplay, swipe mobile e links nativos de album/galeria.
- * Version: 1.10.12
+ * Version: 1.10.13
  * Author: Mlopesdesign
  * Author URI: https://mlopesdesign.com/
  * Text Domain: ml-carousel-gallery-pro
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MLCGP_VERSION', '1.10.12' );
+define( 'MLCGP_VERSION', '1.10.13' );
 define( 'MLCGP_FILE', __FILE__ );
 define( 'MLCGP_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MLCGP_URL', plugin_dir_url( __FILE__ ) );

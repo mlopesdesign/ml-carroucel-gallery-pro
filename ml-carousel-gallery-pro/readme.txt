@@ -4,7 +4,7 @@ Tags: gallery, carousel, slider, ml-gallery-pro
 Requires at least: 6.0
 Tested up to: 6.5
 Requires PHP: 7.4
-Stable tag: 1.10.12
+Stable tag: 1.10.13
 License: GPLv2 or later
 
 Carousel horizontal de galerias do ML Gallery Pro com autoplay, swipe mobile e links diretos.
@@ -29,6 +29,19 @@ Exibe as galerias mais recentes do ML Gallery Pro em um carousel horizontal com:
 4. Use o shortcode [ml_carousel_gallery] em qualquer página.
 
 == Changelog ==
+
+= 1.10.13 =
+* Corrige o carrossel travado num único álbum: a origem "todas" voltou a listar as galerias mais recentes.
+* Remove a substituição automática do resultado recente pela listagem do álbum que continha a galeria mais nova.
+* Corrige a ordenação por criação usando g.id DESC, já que o ML Gallery Pro não preenche created_at de forma confiável.
+* Corrige o cache em instalações com object cache persistente (Redis/Memcached) via geração incremental de cache.
+* Corrige a invalidação de cache, que não limpava nada quando havia object cache ativo.
+* Adiciona guarda de reentrância no resolvedor de links, eliminando risco de recursão do shortcode.
+* Passa a cachear resultados negativos de link, eliminando reprocessamento pesado a cada visita.
+* Evita carrossel vazio sob concorrência: sem cache válido, a consulta é executada em vez de retornar vazio.
+* Reduz consultas duplicadas de capa e reaproveita o conjunto de páginas candidatas por requisição.
+* Ignora autosaves e revisões na invalidação por save_post.
+* Remove código morto do resolvedor de links sem alterar o comportamento validado.
 
 = 1.10.12 =
 * Corrige invalidação indevida de transients durante renderização pública.

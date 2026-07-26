@@ -15,13 +15,42 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class Carousel {
 
-	const TRANSIENT_KEY = 'mlcgp_galleries_cache_v192';
+	/**
+	 * Cache namespace. The numeric suffix is bumped whenever the cache payload
+	 * shape changes so old rows are never reused after a plugin update.
+	 */
+	const TRANSIENT_KEY = 'mlcgp_galleries_cache_v11013';
+
+	/**
+	 * Option holding the incremental cache generation. Bumping it invalidates
+	 * every cached entry at once, including entries stored in a persistent
+	 * object cache (Redis/Memcached) that cannot be enumerated or deleted by
+	 * an SQL LIKE query.
+	 */
+	const CACHE_VERSION_OPTION = 'mlcgp_cache_version';
 
 	/** @var Settings */
 	private $settings;
 
 	/** @var array<string,string> */
 	private $cache_lock_tokens = [];
+
+	/** @var int|null */
+	private $cache_version = null;
+
+	/** @var array<int,string> Per-request cover URL memo. */
+	private $cover_url_memo = [];
+
+	/** @var array<int,\WP_Post>|null Per-request public post pool. */
+	private $public_post_pool = null;
+
+	/**
+	 * Re-entrancy guard. While the link resolver renders other pages through
+	 * the_content, this carousel must never render itself again.
+	 *
+	 * @var bool
+	 */
+	private static $is_resolving = false;
 
 	public function __construct( Settings $settings ) {
 		$this->settings = $settings;
@@ -32,7 +61,7 @@ final class Carousel {
 		add_action( 'wp_enqueue_scripts', [ $this, 'register_assets' ] );
 
 		// WordPress post lifecycle — covers any MLGP galleries stored as posts.
-		add_action( 'save_post', [ $this, 'invalidate_cache' ] );
+		add_action( 'save_post', [ $this, 'invalidate_cache_on_post_save' ] );
 		add_action( 'transition_post_status', [ $this, 'invalidate_cache' ] );
 
 		// ML Gallery Pro gallery lifecycle hooks (all known variants).
@@ -45,6 +74,10 @@ final class Carousel {
 		add_action( 'mlgp_after_save_gallery',      [ $this, 'invalidate_cache' ] );
 		add_action( 'mlgp_after_create_gallery',    [ $this, 'invalidate_cache' ] );
 		add_action( 'mlgp_after_delete_gallery',    [ $this, 'invalidate_cache' ] );
+		add_action( 'mlgp_after_items_stored',      [ $this, 'invalidate_cache' ] );
+		add_action( 'mlgp_album_saved',             [ $this, 'invalidate_cache' ] );
+		add_action( 'mlgp_album_updated',           [ $this, 'invalidate_cache' ] );
+		add_action( 'mlgp_album_items_updated',     [ $this, 'invalidate_cache' ] );
 
 		// Cover-specific hooks.
 		add_action( 'mlgp_gallery_cover_changed',   [ $this, 'invalidate_cache' ] );
@@ -67,6 +100,13 @@ final class Carousel {
 	 * @param array<string, mixed> $atts
 	 */
 	public function render_shortcode( $atts ): string {
+		// Re-entrancy guard: the link resolver renders other pages through
+		// the_content. If one of those pages also holds this shortcode we must
+		// not recurse into a second (potentially infinite) carousel render.
+		if ( self::$is_resolving ) {
+			return '';
+		}
+
 		$atts        = shortcode_atts( [ 'id' => '' ], (array) $atts, 'ml_carousel_gallery' );
 		$s           = $this->settings->get();
 		$limit       = max( 1, (int) $s['limit'] );
@@ -201,6 +241,10 @@ final class Carousel {
 		return (string) ob_get_clean();
 	}
 
+	/* ---------------------------------------------------------------------
+	 * Gallery data
+	 * ------------------------------------------------------------------ */
+
 	/**
 	 * @param array<string,mixed> $args
 	 * @return array<int, array<string,mixed>>
@@ -220,7 +264,7 @@ final class Carousel {
 			]
 		);
 
-		$cached = $this->read_transient_without_public_delete( $cache_key );
+		$cached = $this->cache_get( $cache_key );
 
 		if ( is_array( $cached ) ) {
 			return $cached;
@@ -229,9 +273,22 @@ final class Carousel {
 		$lock_key = $cache_key . '_lock';
 
 		if ( ! $this->acquire_cache_rebuild_lock( $lock_key ) ) {
-			$stale = $this->read_transient_without_public_delete( $cache_key, true );
+			$stale = $this->cache_get( $cache_key, true );
 
-			return is_array( $stale ) ? $stale : [];
+			if ( is_array( $stale ) ) {
+				return $stale;
+			}
+
+			// No cache at all and another request holds the lock. Returning an
+			// empty carousel would show "nenhuma galeria" to a real visitor, so
+			// run the (single, indexed) query directly without writing cache.
+			try {
+				$rows = $this->query_galleries_from_mlgp( $limit, $source, $album_id, $gallery_ids );
+			} catch ( \Throwable $e ) {
+				$rows = [];
+			}
+
+			return is_array( $rows ) ? $rows : [];
 		}
 
 		try {
@@ -241,7 +298,7 @@ final class Carousel {
 				$rows = [];
 			}
 
-			set_transient( $cache_key, $rows, 5 * MINUTE_IN_SECONDS );
+			$this->cache_set( $cache_key, $rows, 5 * MINUTE_IN_SECONDS );
 
 			return $rows;
 		} catch ( \Throwable $e ) {
@@ -251,6 +308,9 @@ final class Carousel {
 		}
 	}
 
+	/**
+	 * @param array<string,mixed> $args
+	 */
 	private function get_galleries_cache_key( int $limit, array $args ): string {
 		$payload = [
 			'limit'       => max( 1, $limit ),
@@ -261,70 +321,16 @@ final class Carousel {
 
 		sort( $payload['gallery_ids'] );
 
-		return self::TRANSIENT_KEY . '_' . md5( wp_json_encode( $payload ) ?: serialize( $payload ) );
+		return self::TRANSIENT_KEY . '_' . $this->get_cache_version() . '_' . md5( wp_json_encode( $payload ) ?: serialize( $payload ) );
 	}
 
 	/**
-	 * Reads a transient without calling get_transient(), because WordPress deletes expired
-	 * transient rows inside get_transient(). Public shortcode rendering must not execute
-	 * delete_option()/DELETE cleanup work. Explicit invalidation remains isolated in
-	 * invalidate_cache() and admin/ML Gallery Pro mutation hooks.
+	 * Reads gallery rows for the requested source.
 	 *
-	 * @return mixed
-	 */
-	private function read_transient_without_public_delete( string $cache_key, bool $allow_stale = false ) {
-		$timeout = get_option( '_transient_timeout_' . $cache_key );
-
-		if ( ! $allow_stale && false !== $timeout && (int) $timeout > 0 && (int) $timeout < time() ) {
-			return false;
-		}
-
-		return get_option( '_transient_' . $cache_key, false );
-	}
-
-	private function acquire_cache_rebuild_lock( string $lock_key ): bool {
-		$option_name  = '_transient_' . $lock_key;
-		$timeout_name = '_transient_timeout_' . $lock_key;
-		$now          = time();
-		$expires      = $now + 20;
-		$token        = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : md5( $lock_key . microtime( true ) . wp_rand() );
-
-		if ( add_option( $option_name, $token, '', 'no' ) ) {
-			update_option( $timeout_name, $expires, false );
-			$this->cache_lock_tokens[ $lock_key ] = $token;
-
-			return true;
-		}
-
-		$timeout = (int) get_option( $timeout_name, 0 );
-
-		if ( $timeout > 0 && $timeout < $now ) {
-			update_option( $option_name, $token, false );
-			update_option( $timeout_name, $expires, false );
-
-			if ( get_option( $option_name ) === $token ) {
-				$this->cache_lock_tokens[ $lock_key ] = $token;
-
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	private function release_cache_rebuild_lock( string $lock_key ): void {
-		$option_name = '_transient_' . $lock_key;
-		$token       = $this->cache_lock_tokens[ $lock_key ] ?? '';
-
-		if ( '' !== $token && get_option( $option_name ) === $token ) {
-			update_option( $option_name, '', false );
-			update_option( '_transient_timeout_' . $lock_key, 1, false );
-		}
-
-		unset( $this->cache_lock_tokens[ $lock_key ] );
-	}
-
-	/**
+	 * source=all        → latest published galleries (g.id DESC).
+	 * source=album      → galleries of one album, in the manual ML Gallery Pro order.
+	 * source=galleries  → an explicit gallery ID list.
+	 *
 	 * @param array<int,int> $gallery_ids
 	 * @return array<int, array<string,mixed>>
 	 */
@@ -339,12 +345,18 @@ final class Carousel {
 		}
 
 		$status_sql = "g.status IN ('publish','published')";
-		$order_sql  = 'COALESCE(NULLIF(g.created_at, ""), "1970-01-01") DESC, g.id DESC';
-		$rows       = [];
+
+		// ML Gallery Pro does not reliably fill/refresh created_at, so the
+		// primary key is the only trustworthy creation order. Ordering by
+		// created_at pushed every gallery with an empty date to the end.
+		$order_sql = 'g.id DESC';
+		$rows      = [];
 
 		if ( 'album' === $source && $album_id > 0 ) {
-			$rows = $this->get_album_gallery_rows_in_mlgp_order( $album_id, $limit );
-		} elseif ( 'galleries' === $source && ! empty( $gallery_ids ) ) {
+			return $this->get_album_gallery_rows_in_mlgp_order( $album_id, $limit );
+		}
+
+		if ( 'galleries' === $source && ! empty( $gallery_ids ) ) {
 			$placeholders = implode( ',', array_fill( 0, count( $gallery_ids ), '%d' ) );
 			$params       = array_merge( $gallery_ids, [ $limit ] );
 			$query        = $wpdb->prepare(
@@ -356,77 +368,26 @@ final class Carousel {
 				$params
 			);
 			$rows = $wpdb->get_results( $query, ARRAY_A );
-		} else {
-			$rows = $wpdb->get_results(
-				$wpdb->prepare(
-					"SELECT g.id, g.title, g.slug, g.cover_attachment_id, g.cover_item_id, g.created_at
-					FROM {$table} g
-					WHERE {$status_sql}
-					ORDER BY {$order_sql}
-					LIMIT %d",
-					$limit
-				),
-				ARRAY_A
-			);
 
-			$album_ordered_rows = $this->maybe_get_album_ordered_rows_from_recent_rows( is_array( $rows ) ? $rows : [], $limit );
-			if ( ! empty( $album_ordered_rows ) ) {
-				$rows = $album_ordered_rows;
-			}
+			return is_array( $rows ) ? $rows : [];
 		}
 
-		return is_array( $rows ) ? $rows : [];
-	}
-
-	/**
-	 * When the automatic carousel is fed by recent galleries, mirror the ML Gallery Pro
-	 * album structure for the album that contains the newest gallery. ML Gallery Pro
-	 * renders album items with wp_mlgp_album_items ORDER BY sort_order ASC, id ASC;
-	 * the carousel must not override that manual order with created_at/id ordering.
-	 *
-	 * @param array<int,array<string,mixed>> $recent_rows Recent gallery rows.
-	 * @return array<int,array<string,mixed>>
-	 */
-	private function maybe_get_album_ordered_rows_from_recent_rows( array $recent_rows, int $limit ): array {
-		if ( empty( $recent_rows ) ) {
-			return [];
-		}
-
-		$newest_gallery_id = 0;
-
-		foreach ( $recent_rows as $row ) {
-			$newest_gallery_id = is_array( $row ) ? absint( $row['id'] ?? 0 ) : 0;
-
-			if ( $newest_gallery_id > 0 ) {
-				break;
-			}
-		}
-
-		if ( $newest_gallery_id <= 0 ) {
-			return [];
-		}
-
-		global $wpdb;
-
-		$album_items_table = $wpdb->prefix . 'mlgp_album_items';
-
-		$album_id = (int) $wpdb->get_var(
+		// source=all — the newest published galleries, period. This result must
+		// never be replaced by an album listing: doing so pinned the carousel to
+		// whatever album happened to contain the newest gallery.
+		$rows = $wpdb->get_results(
 			$wpdb->prepare(
-				"SELECT album_id
-				FROM {$album_items_table}
-				WHERE item_type = %s AND item_id = %d
-				ORDER BY id DESC
-				LIMIT 1",
-				'gallery',
-				$newest_gallery_id
-			)
+				"SELECT g.id, g.title, g.slug, g.cover_attachment_id, g.cover_item_id, g.created_at
+				FROM {$table} g
+				WHERE {$status_sql}
+				ORDER BY {$order_sql}
+				LIMIT %d",
+				$limit
+			),
+			ARRAY_A
 		);
 
-		if ( $album_id <= 0 ) {
-			return [];
-		}
-
-		return $this->get_album_gallery_rows_in_mlgp_order( $album_id, $limit );
+		return is_array( $rows ) ? $rows : [];
 	}
 
 	/**
@@ -475,6 +436,207 @@ final class Carousel {
 		return is_array( $rows ) ? $rows : [];
 	}
 
+	/* ---------------------------------------------------------------------
+	 * Cache layer
+	 * ------------------------------------------------------------------ */
+
+	private function get_cache_version(): int {
+		if ( null === $this->cache_version ) {
+			$this->cache_version = max( 1, (int) get_option( self::CACHE_VERSION_OPTION, 1 ) );
+		}
+
+		return $this->cache_version;
+	}
+
+	/**
+	 * Reads a cache entry.
+	 *
+	 * With a persistent object cache the standard transient API is used, because
+	 * transients never reach the options table there. Without one, the option row
+	 * is read directly: get_transient() deletes expired rows, and public shortcode
+	 * rendering must never execute delete_option()/DELETE cleanup work.
+	 *
+	 * @return mixed False when missing.
+	 */
+	private function cache_get( string $cache_key, bool $allow_stale = false ) {
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+			return get_transient( $cache_key );
+		}
+
+		$timeout = get_option( '_transient_timeout_' . $cache_key );
+
+		if ( ! $allow_stale && false !== $timeout && (int) $timeout > 0 && (int) $timeout < time() ) {
+			return false;
+		}
+
+		return get_option( '_transient_' . $cache_key, false );
+	}
+
+	/**
+	 * @param mixed $value
+	 */
+	private function cache_set( string $cache_key, $value, int $ttl ): void {
+		set_transient( $cache_key, $value, max( 60, $ttl ) );
+	}
+
+	private function acquire_cache_rebuild_lock( string $lock_key ): bool {
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+			if ( false !== get_transient( $lock_key ) ) {
+				return false;
+			}
+
+			$token = wp_generate_uuid4();
+			set_transient( $lock_key, $token, 20 );
+			$this->cache_lock_tokens[ $lock_key ] = $token;
+
+			return true;
+		}
+
+		$option_name  = '_transient_' . $lock_key;
+		$timeout_name = '_transient_timeout_' . $lock_key;
+		$now          = time();
+		$expires      = $now + 20;
+		$token        = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : md5( $lock_key . microtime( true ) . wp_rand() );
+
+		if ( add_option( $option_name, $token, '', 'no' ) ) {
+			update_option( $timeout_name, $expires, false );
+			$this->cache_lock_tokens[ $lock_key ] = $token;
+
+			return true;
+		}
+
+		$timeout = (int) get_option( $timeout_name, 0 );
+
+		if ( $timeout > 0 && $timeout < $now ) {
+			update_option( $option_name, $token, false );
+			update_option( $timeout_name, $expires, false );
+
+			if ( get_option( $option_name ) === $token ) {
+				$this->cache_lock_tokens[ $lock_key ] = $token;
+
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private function release_cache_rebuild_lock( string $lock_key ): void {
+		$token = $this->cache_lock_tokens[ $lock_key ] ?? '';
+
+		if ( '' === $token ) {
+			unset( $this->cache_lock_tokens[ $lock_key ] );
+
+			return;
+		}
+
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+			if ( get_transient( $lock_key ) === $token ) {
+				delete_transient( $lock_key );
+			}
+
+			unset( $this->cache_lock_tokens[ $lock_key ] );
+
+			return;
+		}
+
+		$option_name = '_transient_' . $lock_key;
+
+		if ( get_option( $option_name ) === $token ) {
+			update_option( $option_name, '', false );
+			update_option( '_transient_timeout_' . $lock_key, 1, false );
+		}
+
+		unset( $this->cache_lock_tokens[ $lock_key ] );
+	}
+
+	/**
+	 * Invalidates every carousel cache entry.
+	 *
+	 * The generation counter is the authoritative mechanism: it works with and
+	 * without a persistent object cache. The SQL purge only garbage-collects
+	 * abandoned option rows on installs without an object cache.
+	 */
+	public function invalidate_cache(): void {
+		$version = $this->get_cache_version() + 1;
+
+		update_option( self::CACHE_VERSION_OPTION, $version, false );
+
+		$this->cache_version    = $version;
+		$this->cover_url_memo   = [];
+		$this->public_post_pool = null;
+
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+			return;
+		}
+
+		global $wpdb;
+
+		$like         = $wpdb->esc_like( '_transient_mlcgp_' ) . '%';
+		$timeout_like = $wpdb->esc_like( '_transient_timeout_mlcgp_' ) . '%';
+
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $like ) );
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $timeout_like ) );
+	}
+
+	/**
+	 * Cache invalidation for save_post, skipping autosaves and revisions.
+	 *
+	 * @param int|string $post_id Post ID.
+	 */
+	public function invalidate_cache_on_post_save( $post_id ): void {
+		$post_id = absint( $post_id );
+
+		if ( $post_id <= 0 ) {
+			return;
+		}
+
+		if ( wp_is_post_autosave( $post_id ) || wp_is_post_revision( $post_id ) ) {
+			return;
+		}
+
+		if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+			return;
+		}
+
+		$this->invalidate_cache();
+	}
+
+	/**
+	 * Bust carousel cache when attachment-related meta changes.
+	 *
+	 * @param int|string $meta_id    Meta row id.
+	 * @param int|string $object_id  Post/attachment id.
+	 * @param string     $meta_key   Meta key.
+	 * @param mixed      $meta_value Meta value.
+	 */
+	public function invalidate_cache_on_attachment_change( $meta_id, $object_id, string $meta_key, $meta_value ): void {
+		unset( $meta_id, $object_id, $meta_value );
+
+		$watched = [
+			// WordPress core attachment meta.
+			'_wp_attached_file',
+			'_wp_attachment_metadata',
+			'_thumbnail_id',
+			// ML Gallery Pro cover meta keys (all known variants).
+			'mlgp_cover_attachment_id',
+			'mlgp_cover_item_id',
+			'_mlgp_cover',
+			'_mlgp_cover_attachment_id',
+			'_mlgp_cover_item_id',
+			'cover_attachment_id',
+			'cover_item_id',
+		];
+
+		if ( in_array( $meta_key, $watched, true ) ) {
+			$this->invalidate_cache();
+		}
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Link resolver — never break this behavior.
+	 * ------------------------------------------------------------------ */
+
 	/**
 	 * Builds the native ML Gallery Pro album-view URL.
 	 *
@@ -490,39 +652,35 @@ final class Carousel {
 			return '';
 		}
 
-		$cache_key = 'mlcgp_v190_gallery_url_' . $gallery_id;
-		$cached    = $this->read_transient_without_public_delete( $cache_key );
+		$cache_key = 'mlcgp_gurl_' . $this->get_cache_version() . '_' . $gallery_id;
+		$cached    = $this->cache_get( $cache_key );
 
-		if ( false !== $cached && is_string( $cached ) ) {
+		if ( is_string( $cached ) ) {
 			return $cached;
 		}
 
 		$album_ids = $this->get_related_album_ids_for_gallery( $gallery_id );
 
 		if ( empty( $album_ids ) ) {
+			// Negative result is cached too: without this, every page view
+			// re-ran the full resolver for every unresolved gallery.
+			$this->cache_set( $cache_key, '', 5 * MINUTE_IN_SECONDS );
+
 			return '';
 		}
 
 		$resolved_url = $this->resolve_gallery_url_via_runtime_render( $gallery_id, $gallery, $album_ids );
 
 		if ( '' !== $resolved_url ) {
-			set_transient( $cache_key, $resolved_url, 15 * MINUTE_IN_SECONDS );
+			$this->cache_set( $cache_key, $resolved_url, 15 * MINUTE_IN_SECONDS );
+
 			return $resolved_url;
 		}
 
+		$this->cache_set( $cache_key, '', 5 * MINUTE_IN_SECONDS );
+
 		return '';
 	}
-
-
-	/**
-	 * Try to reuse the exact public gallery URL rendered by ML Gallery Pro on the album page.
-	 *
-	 * This avoids inventing URLs and keeps the carousel aligned with the real front-end motor.
-	 *
-	 * @param int                 $gallery_id     Gallery ID.
-	 * @param array<string,mixed> $gallery        Gallery row.
-	 * @param int                 $root_album_id  Root album ID.
-	 */
 
 	/**
 	 * Resolve the gallery URL by exercising the same front-end runtime behavior ML Gallery Pro uses.
@@ -540,29 +698,36 @@ final class Carousel {
 		$gallery_slug  = isset( $gallery['slug'] ) ? sanitize_title( (string) $gallery['slug'] ) : '';
 		$cover_url     = $this->get_cover_url( $gallery );
 
-		foreach ( $album_ids as $album_id ) {
-			$album_id = absint( $album_id );
-			if ( $album_id <= 0 ) {
-				continue;
-			}
+		$previous_state      = self::$is_resolving;
+		self::$is_resolving  = true;
 
-			$candidates = $this->get_runtime_candidate_posts_for_album( $album_id, $gallery_title, $gallery_slug );
-
-			// Bug #4 fix: cap full content renders to 5 candidates per album to prevent timeout.
-			$candidates = array_slice( $candidates, 0, 5 );
-
-			foreach ( $candidates as $post ) {
-				if ( ! $post instanceof \WP_Post ) {
+		try {
+			foreach ( $album_ids as $album_id ) {
+				$album_id = absint( $album_id );
+				if ( $album_id <= 0 ) {
 					continue;
 				}
 
-				if ( $this->page_renders_gallery_for_album( $post, $album_id, $gallery_id, $gallery_title, $gallery_slug, $cover_url ) ) {
-					$permalink = get_permalink( $post );
-					if ( is_string( $permalink ) && '' !== $permalink ) {
-						return add_query_arg( $this->build_album_view_key( $album_id ), 'gallery-' . $gallery_id, $permalink );
+				$candidates = $this->get_runtime_candidate_posts_for_album( $album_id, $gallery_title, $gallery_slug );
+
+				// Cap full content renders to 5 candidates per album to prevent timeout.
+				$candidates = array_slice( $candidates, 0, 5 );
+
+				foreach ( $candidates as $post ) {
+					if ( ! $post instanceof \WP_Post ) {
+						continue;
+					}
+
+					if ( $this->page_renders_gallery_for_album( $post, $album_id, $gallery_id, $gallery_title, $gallery_slug, $cover_url ) ) {
+						$permalink = get_permalink( $post );
+						if ( is_string( $permalink ) && '' !== $permalink ) {
+							return add_query_arg( $this->build_album_view_key( $album_id ), 'gallery-' . $gallery_id, $permalink );
+						}
 					}
 				}
 			}
+		} finally {
+			self::$is_resolving = $previous_state;
 		}
 
 		return '';
@@ -620,7 +785,7 @@ final class Carousel {
 		$_GET[ $query_key ]     = $query_value;
 		$_REQUEST[ $query_key ] = $query_value;
 
-		// Bug #3 fix: use try/finally so superglobals are always restored even if an exception is thrown.
+		// Superglobals are always restored, even if the render throws.
 		try {
 			$html = $this->render_public_post_content( $post );
 		} finally {
@@ -673,65 +838,6 @@ final class Carousel {
 		}
 
 		return false;
-	}
-
-	private function resolve_gallery_url_from_site_render( int $gallery_id, array $gallery, int $root_album_id ): string {
-		$post = $this->find_album_public_post( $root_album_id, $this->get_album_meta_by_id( $root_album_id ) );
-
-		if ( ! $post instanceof \WP_Post ) {
-			return '';
-		}
-
-		$html = $this->render_public_post_content( $post );
-
-		if ( '' === $html ) {
-			return '';
-		}
-
-		$gallery_token = 'gallery-' . $gallery_id;
-		$gallery_title = isset( $gallery['title'] ) ? trim( wp_strip_all_tags( (string) $gallery['title'] ) ) : '';
-		$gallery_slug  = isset( $gallery['slug'] ) ? sanitize_title( (string) $gallery['slug'] ) : '';
-
-		if ( preg_match_all( '/href\s*=\s*(["\'])(.*?)\1/i', $html, $matches ) && ! empty( $matches[2] ) ) {
-			$best_match = '';
-
-			foreach ( $matches[2] as $raw_url ) {
-				$url = $this->normalize_public_url( html_entity_decode( (string) $raw_url, ENT_QUOTES, 'UTF-8' ) );
-
-				if ( '' === $url ) {
-					continue;
-				}
-
-				if ( false !== strpos( $url, $gallery_token ) ) {
-					return $url;
-				}
-
-				if ( '' !== $gallery_slug && false !== strpos( strtolower( $url ), strtolower( $gallery_slug ) ) && '' === $best_match ) {
-					$best_match = $url;
-				}
-			}
-
-			if ( '' !== $best_match ) {
-				return $best_match;
-			}
-		}
-
-		if ( '' !== $gallery_title ) {
-			$normalized_title = $this->normalize_title_for_match( $gallery_title );
-
-			if ( '' !== $normalized_title && preg_match_all( '/<a\b[^>]*href\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)<\/a>/is', $html, $anchor_matches, PREG_SET_ORDER ) ) {
-				foreach ( $anchor_matches as $anchor ) {
-					$url  = $this->normalize_public_url( html_entity_decode( (string) $anchor[2], ENT_QUOTES, 'UTF-8' ) );
-					$text = $this->normalize_title_for_match( wp_strip_all_tags( (string) $anchor[3] ) );
-
-					if ( '' !== $url && '' !== $text && false !== strpos( $text, $normalized_title ) ) {
-						return $url;
-					}
-				}
-			}
-		}
-
-		return '';
 	}
 
 	/**
@@ -817,7 +923,11 @@ final class Carousel {
 				continue;
 			}
 
-			if ( false !== strpos( strtolower( (string) $post->post_title ), strtolower( $album_title ) ) || false !== strpos( strtolower( (string) $post->post_name ), strtolower( $album_slug ) ) ) {
+			if ( '' !== $album_title && false !== strpos( strtolower( (string) $post->post_title ), strtolower( $album_title ) ) ) {
+				return $post;
+			}
+
+			if ( '' !== $album_slug && false !== strpos( strtolower( (string) $post->post_name ), strtolower( $album_slug ) ) ) {
 				return $post;
 			}
 
@@ -836,76 +946,31 @@ final class Carousel {
 			return '';
 		}
 
-		$previous_post = $GLOBALS['post'] ?? null;
+		// Never render a page that embeds this carousel: it would re-enter the
+		// shortcode while resolving links.
+		if ( function_exists( 'has_shortcode' ) && has_shortcode( $post_content, 'ml_carousel_gallery' ) ) {
+			return '';
+		}
+
+		$previous_post   = $GLOBALS['post'] ?? null;
 		$GLOBALS['post'] = $post;
 		setup_postdata( $post );
 
-		$html = (string) apply_filters( 'the_content', $post_content );
-
-		if ( $previous_post instanceof \WP_Post ) {
-			$GLOBALS['post'] = $previous_post;
-			setup_postdata( $previous_post );
-		} else {
-			wp_reset_postdata();
-			unset( $GLOBALS['post'] );
+		try {
+			$html = (string) apply_filters( 'the_content', $post_content );
+		} catch ( \Throwable $e ) {
+			$html = '';
+		} finally {
+			if ( $previous_post instanceof \WP_Post ) {
+				$GLOBALS['post'] = $previous_post;
+				setup_postdata( $previous_post );
+			} else {
+				wp_reset_postdata();
+				unset( $GLOBALS['post'] );
+			}
 		}
 
 		return $html;
-	}
-
-
-	/**
-	 * Search the rendered public content of published posts/pages and reuse the exact
-	 * gallery URL already emitted by the real ML Gallery Pro front-end.
-	 *
-	 * This is intentionally dynamic so a deleted/recreated album is picked up without
-	 * manual per-site adjustments.
-	 *
-	 * @param int                 $gallery_id    Gallery ID.
-	 * @param array<string,mixed> $gallery       Gallery row.
-	 * @param int                 $root_album_id Root album ID.
-	 */
-	private function find_rendered_gallery_url_across_public_posts( int $gallery_id, array $gallery, int $root_album_id ): string {
-		$gallery_token = 'gallery-' . $gallery_id;
-		$gallery_title = isset( $gallery['title'] ) ? trim( wp_strip_all_tags( (string) $gallery['title'] ) ) : '';
-		$gallery_slug  = isset( $gallery['slug'] ) ? sanitize_title( (string) $gallery['slug'] ) : '';
-		$needles       = array_filter( array_unique( [ $gallery_token, $gallery_title, $gallery_slug, 'mlgp_album_view_' . $root_album_id ] ) );
-
-		$candidates = $this->get_public_post_candidates( $needles );
-
-		foreach ( $candidates as $post ) {
-			$html = $this->render_public_post_content( $post );
-
-			if ( '' === $html ) {
-				continue;
-			}
-
-			if ( preg_match_all( '/href\s*=\s*(["\'])(.*?)\1/i', $html, $matches ) && ! empty( $matches[2] ) ) {
-				$best_match = '';
-
-				foreach ( $matches[2] as $raw_url ) {
-					$url = $this->normalize_public_url( html_entity_decode( (string) $raw_url, ENT_QUOTES, 'UTF-8' ) );
-
-					if ( '' === $url ) {
-						continue;
-					}
-
-					if ( false !== strpos( $url, $gallery_token ) ) {
-						return $url;
-					}
-
-					if ( '' !== $gallery_slug && false !== strpos( strtolower( $url ), strtolower( $gallery_slug ) ) && '' === $best_match ) {
-						$best_match = $url;
-					}
-				}
-
-				if ( '' !== $best_match ) {
-					return $best_match;
-				}
-			}
-		}
-
-		return '';
 	}
 
 	/**
@@ -913,6 +978,67 @@ final class Carousel {
 	 * @return array<int,\WP_Post>
 	 */
 	private function get_public_post_candidates( array $needles ): array {
+		$pool = $this->get_public_post_pool();
+
+		if ( empty( $pool ) ) {
+			return [];
+		}
+
+		$scored = [];
+
+		foreach ( $pool as $post ) {
+			if ( ! $post instanceof \WP_Post ) {
+				continue;
+			}
+
+			$haystack = strtolower( implode( ' ', array_filter( [ (string) $post->post_title, (string) $post->post_name, (string) $post->post_content ] ) ) );
+			$score    = 0;
+
+			foreach ( $needles as $needle ) {
+				$needle = strtolower( trim( (string) $needle ) );
+				if ( '' !== $needle && false !== strpos( $haystack, $needle ) ) {
+					$score++;
+				}
+			}
+
+			if ( false !== strpos( $haystack, 'mlgp' ) || false !== strpos( $haystack, 'nggallery' ) ) {
+				$score += 2;
+			}
+
+			if ( $score > 0 ) {
+				$scored[] = [
+					'score' => $score,
+					'post'  => $post,
+				];
+			}
+		}
+
+		usort(
+			$scored,
+			static function ( array $a, array $b ): int {
+				return $b['score'] <=> $a['score'];
+			}
+		);
+
+		return array_map(
+			static function ( array $row ) {
+				return $row['post'];
+			},
+			array_slice( $scored, 0, 25 )
+		);
+	}
+
+	/**
+	 * The candidate query is identical for every gallery in a render, so it runs
+	 * once per request instead of once per gallery.
+	 *
+	 * @return array<int,\WP_Post>
+	 */
+	private function get_public_post_pool(): array {
+		if ( is_array( $this->public_post_pool ) ) {
+			return $this->public_post_pool;
+		}
+
 		$post_types = get_post_types( [ 'public' => true ], 'names' );
 
 		$query = new \WP_Query(
@@ -929,121 +1055,16 @@ final class Carousel {
 			]
 		);
 
-		if ( empty( $query->posts ) || ! is_array( $query->posts ) ) {
-			return [];
-		}
+		$this->public_post_pool = ( ! empty( $query->posts ) && is_array( $query->posts ) ) ? $query->posts : [];
 
-		$scored = [];
-
-		foreach ( $query->posts as $post ) {
-			if ( ! $post instanceof \WP_Post ) {
-				continue;
-			}
-
-			$haystack = strtolower( implode( ' ', array_filter( [ (string) $post->post_title, (string) $post->post_name, (string) $post->post_content ] ) ) );
-			$score = 0;
-
-			foreach ( $needles as $needle ) {
-				$needle = strtolower( trim( (string) $needle ) );
-				if ( '' !== $needle && false !== strpos( $haystack, $needle ) ) {
-					$score++;
-				}
-			}
-
-			if ( false !== strpos( $haystack, 'mlgp' ) || false !== strpos( $haystack, 'nggallery' ) ) {
-				$score += 2;
-			}
-
-			if ( $score > 0 ) {
-				$scored[] = [ 'score' => $score, 'post' => $post ];
-			}
-		}
-
-		usort(
-			$scored,
-			static function ( array $a, array $b ): int {
-				return $b['score'] <=> $a['score'];
-			}
-		);
-
-		return array_map( static function ( array $row ) { return $row['post']; }, array_slice( $scored, 0, 25 ) );
-	}
-
-	private function normalize_public_url( string $url ): string {
-		$url = trim( $url );
-
-		if ( '' === $url || '#' === $url ) {
-			return '';
-		}
-
-		if ( 0 === strpos( $url, '//' ) ) {
-			return is_ssl() ? 'https:' . $url : 'http:' . $url;
-		}
-
-		if ( 0 === strpos( $url, '/' ) ) {
-			return home_url( $url );
-		}
-
-		if ( ! preg_match( '#^https?://#i', $url ) ) {
-			return home_url( '/' . ltrim( $url, '/' ) );
-		}
-
-		return $url;
+		return $this->public_post_pool;
 	}
 
 	private function normalize_title_for_match( string $value ): string {
 		$value = remove_accents( wp_strip_all_tags( $value ) );
-		$value = strtolower( preg_replace( '/\s+/', ' ', $value ) );
+		$value = strtolower( (string) preg_replace( '/\s+/', ' ', $value ) );
 
 		return trim( $value );
-	}
-	/**
-	 * Resolves the real public base URL for a root album.
-	 *
-	 * Never assume the internal album slug is the public permalink.
-	 * First try to locate a published page/post that references this album,
-	 * then fall back to the internal slug only if nothing public is found.
-	 */
-	private function get_album_base_url_by_id( int $album_id ): string {
-		global $wpdb;
-
-		$album_id = absint( $album_id );
-
-		if ( $album_id <= 0 ) {
-			return '';
-		}
-
-		$cache_key = 'mlcgp_v190_album_base_' . $album_id;
-		$cached    = $this->read_transient_without_public_delete( $cache_key );
-
-		if ( false !== $cached && is_string( $cached ) ) {
-			return $cached;
-		}
-
-		$album_meta = $this->get_album_meta_by_id( $album_id );
-
-		if ( ! empty( $album_meta['public_url'] ) ) {
-			set_transient( $cache_key, (string) $album_meta['public_url'], 15 * MINUTE_IN_SECONDS );
-			return (string) $album_meta['public_url'];
-		}
-
-		$resolved = $this->resolve_album_permalink_from_content( $album_id, $album_meta );
-
-		if ( '' !== $resolved ) {
-			set_transient( $cache_key, $resolved, 15 * MINUTE_IN_SECONDS );
-			return $resolved;
-		}
-
-		$slug = isset( $album_meta['slug'] ) ? trim( (string) $album_meta['slug'] ) : '';
-
-		if ( '' === $slug ) {
-			return '';
-		}
-
-		$url = home_url( '/' . ltrim( $slug, '/' ) . '/' );
-		set_transient( $cache_key, $url, 15 * MINUTE_IN_SECONDS );
-
-		return $url;
 	}
 
 	/**
@@ -1096,22 +1117,6 @@ final class Carousel {
 
 		return $meta;
 	}
-
-	/**
-	 * @param array<string,string> $album_meta
-	 */
-	private function resolve_album_permalink_from_content( int $album_id, array $album_meta ): string {
-		$post = $this->find_album_public_post( $album_id, $album_meta );
-
-		if ( ! $post instanceof \WP_Post ) {
-			return '';
-		}
-
-		$permalink = get_permalink( $post );
-
-		return is_string( $permalink ) ? $permalink : '';
-	}
-
 
 	/**
 	 * @return array<int,int>
@@ -1188,84 +1193,13 @@ final class Carousel {
 		return $chain;
 	}
 
-	/**
-	 * @return array<int, int>
-	 */
-	private function get_root_album_ids_for_gallery( int $gallery_id ): array {
-		global $wpdb;
-
-		$album_items_table = $wpdb->prefix . 'mlgp_album_items';
-
-		$parents = $wpdb->get_col(
-			$wpdb->prepare(
-				"SELECT album_id FROM {$album_items_table} WHERE item_type = %s AND item_id = %d ORDER BY sort_order ASC, id ASC",
-				'gallery',
-				$gallery_id
-			)
-		);
-
-		if ( ! is_array( $parents ) || empty( $parents ) ) {
-			return [];
-		}
-
-		$roots = [];
-
-		foreach ( $parents as $album_id ) {
-			$album_id = (int) $album_id;
-			if ( $album_id <= 0 ) {
-				continue;
-			}
-			$roots = array_merge( $roots, $this->walk_album_ancestors_to_roots( $album_id, [] ) );
-		}
-
-		$roots = array_values( array_unique( array_filter( array_map( 'absint', $roots ) ) ) );
-		sort( $roots );
-
-		return $roots;
-	}
-
-	/**
-	 * @param array<int, int> $visited
-	 * @return array<int, int>
-	 */
-	private function walk_album_ancestors_to_roots( int $album_id, array $visited ): array {
-		global $wpdb;
-
-		if ( $album_id <= 0 || in_array( $album_id, $visited, true ) ) {
-			return [];
-		}
-
-		$visited[]         = $album_id;
-		$album_items_table = $wpdb->prefix . 'mlgp_album_items';
-
-		$parents = $wpdb->get_col(
-			$wpdb->prepare(
-				"SELECT album_id FROM {$album_items_table} WHERE item_type = %s AND item_id = %d ORDER BY sort_order ASC, id ASC",
-				'album',
-				$album_id
-			)
-		);
-
-		if ( ! is_array( $parents ) || empty( $parents ) ) {
-			return [ $album_id ];
-		}
-
-		$roots = [];
-
-		foreach ( $parents as $parent_id ) {
-			$parent_id = (int) $parent_id;
-			if ( $parent_id <= 0 ) {
-				continue;
-			}
-			$roots = array_merge( $roots, $this->walk_album_ancestors_to_roots( $parent_id, $visited ) );
-		}
-
-		return $roots;
-	}
-
 	private function build_album_view_key( int $root_album_id ): string {
 		return sanitize_key( 'mlgp_album_view_' . absint( $root_album_id ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Covers
+	 * ------------------------------------------------------------------ */
 
 	/**
 	 * @param array<string, mixed> $gallery
@@ -1273,13 +1207,33 @@ final class Carousel {
 	private function get_cover_url( array $gallery ): string {
 		$gallery_id = (int) ( $gallery['id'] ?? 0 );
 
+		if ( $gallery_id > 0 && isset( $this->cover_url_memo[ $gallery_id ] ) ) {
+			return $this->cover_url_memo[ $gallery_id ];
+		}
+
+		$url = $this->resolve_cover_url( $gallery );
+
+		if ( $gallery_id > 0 ) {
+			$this->cover_url_memo[ $gallery_id ] = $url;
+		}
+
+		return $url;
+	}
+
+	/**
+	 * @param array<string, mixed> $gallery
+	 */
+	private function resolve_cover_url( array $gallery ): string {
+		global $wpdb;
+
+		$gallery_id = (int) ( $gallery['id'] ?? 0 );
+
 		// Always re-read cover_attachment_id and cover_item_id fresh from the DB so a cover
 		// change in ML Gallery Pro is reflected immediately, even when the gallery list row
 		// is still cached with the previous values.
 		if ( $gallery_id > 0 ) {
-			global $wpdb;
 			$galleries_table = $wpdb->prefix . 'mlgp_galleries';
-			$fresh = $wpdb->get_row(
+			$fresh           = $wpdb->get_row(
 				$wpdb->prepare(
 					"SELECT cover_attachment_id, cover_item_id FROM {$galleries_table} WHERE id = %d LIMIT 1",
 					$gallery_id
@@ -1287,8 +1241,8 @@ final class Carousel {
 				ARRAY_A
 			);
 			if ( is_array( $fresh ) ) {
-				$gallery['cover_attachment_id'] = $fresh['cover_attachment_id'] ?? $gallery['cover_attachment_id'];
-				$gallery['cover_item_id']       = $fresh['cover_item_id'] ?? $gallery['cover_item_id'];
+				$gallery['cover_attachment_id'] = $fresh['cover_attachment_id'] ?? ( $gallery['cover_attachment_id'] ?? 0 );
+				$gallery['cover_item_id']       = $fresh['cover_item_id'] ?? ( $gallery['cover_item_id'] ?? 0 );
 			}
 		}
 
@@ -1300,8 +1254,6 @@ final class Carousel {
 				return $this->append_cover_cache_buster( (string) $src[0], $gallery );
 			}
 		}
-
-		global $wpdb;
 
 		$items_table = $wpdb->prefix . 'mlgp_gallery_items';
 
@@ -1339,6 +1291,10 @@ final class Carousel {
 			}
 		}
 
+		if ( $gallery_id <= 0 ) {
+			return '';
+		}
+
 		$row = $wpdb->get_row(
 			$wpdb->prepare(
 				"SELECT large_url, medium_url, file_url, attachment_id
@@ -1372,40 +1328,10 @@ final class Carousel {
 		return '';
 	}
 
-
-	/**
-	 * Bust carousel cache when attachment-related meta changes.
-	 *
-	 * @param int|string $meta_id    Meta row id.
-	 * @param int|string $object_id  Post/attachment id.
-	 * @param string     $meta_key   Meta key.
-	 * @param mixed      $meta_value Meta value.
-	 */
-	public function invalidate_cache_on_attachment_change( $meta_id, $object_id, string $meta_key, $meta_value ): void {
-		unset( $meta_id, $meta_value );
-
-		$watched = [
-			// WordPress core attachment meta.
-			'_wp_attached_file',
-			'_wp_attachment_metadata',
-			'_thumbnail_id',
-			// ML Gallery Pro cover meta keys (all known variants).
-			'mlgp_cover_attachment_id',
-			'mlgp_cover_item_id',
-			'_mlgp_cover',
-			'_mlgp_cover_attachment_id',
-			'_mlgp_cover_item_id',
-			'cover_attachment_id',
-			'cover_item_id',
-		];
-
-		if ( in_array( $meta_key, $watched, true ) ) {
-			$this->invalidate_cache();
-		}
-	}
-
 	/**
 	 * Adds a light cache-buster so updated cover selections refresh immediately in the carousel.
+	 *
+	 * @param array<string,mixed> $gallery
 	 */
 	private function append_cover_cache_buster( string $url, array $gallery ): string {
 		if ( '' === $url ) {
@@ -1422,6 +1348,10 @@ final class Carousel {
 
 		return (string) add_query_arg( 'mlcgpv', rawurlencode( $version ), $url );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Title / date
+	 * ------------------------------------------------------------------ */
 
 	private function process_title( string $title ): string {
 		$title = trim( wp_strip_all_tags( $title ) );
@@ -1448,15 +1378,18 @@ final class Carousel {
 	 * @return array<int, int>
 	 */
 	private function parse_gallery_ids( string $csv ): array {
-		$csv = preg_replace( '/[^0-9,]/', '', $csv );
+		$csv = (string) preg_replace( '/[^0-9,]/', '', $csv );
 
-		if ( ! is_string( $csv ) || '' === trim( $csv, ',' ) ) {
+		if ( '' === trim( $csv, ',' ) ) {
 			return [];
 		}
 
 		return array_values( array_unique( array_filter( array_map( 'absint', explode( ',', trim( $csv, ',' ) ) ) ) ) );
 	}
 
+	/* ---------------------------------------------------------------------
+	 * Admin preview
+	 * ------------------------------------------------------------------ */
 
 	/**
 	 * Returns real gallery data for the admin preview using the same source logic as the shortcode.
@@ -1465,11 +1398,11 @@ final class Carousel {
 	 * @return array<int, array<string, string>>
 	 */
 	public function get_admin_preview_items( string $profile_id = '' ): array {
-		$s = $this->settings->get();
+		$s       = $this->settings->get();
 		$profile = null;
 
 		if ( method_exists( $this->settings, 'get_profile' ) ) {
-			$lookup = '' !== $profile_id ? $profile_id : 'home';
+			$lookup  = '' !== $profile_id ? $profile_id : 'home';
 			$profile = $this->settings->get_profile( $lookup );
 		}
 
@@ -1478,9 +1411,9 @@ final class Carousel {
 			$profile  = ! empty( $profiles ) && is_array( $profiles[0] ) ? $profiles[0] : [];
 		}
 
-		$limit = 4;
-		$source = 'all';
-		$album_id = 0;
+		$limit       = 4;
+		$source      = 'all';
+		$album_id    = 0;
 		$gallery_ids = [];
 
 		if ( is_array( $profile ) && ! empty( $profile ) ) {
@@ -1490,11 +1423,14 @@ final class Carousel {
 			$gallery_ids = $this->parse_gallery_ids( (string) ( $profile['gallery_ids'] ?? '' ) );
 		}
 
-		$rows = $this->get_galleries( $limit, [
-			'source'      => $source,
-			'album_id'    => $album_id,
-			'gallery_ids' => $gallery_ids,
-		] );
+		$rows = $this->get_galleries(
+			$limit,
+			[
+				'source'      => $source,
+				'album_id'    => $album_id,
+				'gallery_ids' => $gallery_ids,
+			]
+		);
 
 		$items = [];
 
@@ -1513,6 +1449,10 @@ final class Carousel {
 
 		return $items;
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Assets
+	 * ------------------------------------------------------------------ */
 
 	public function register_assets(): void {
 		wp_register_style(
@@ -1534,27 +1474,5 @@ final class Carousel {
 	private function enqueue_assets(): void {
 		wp_enqueue_style( 'mlcgp-carousel' );
 		wp_enqueue_script( 'mlcgp-carousel' );
-	}
-
-	public function invalidate_cache(): void {
-		global $wpdb;
-
-		// Gallery list cache (TRANSIENT_KEY + per-query md5 suffix).
-		$like = $wpdb->esc_like( '_transient_' . self::TRANSIENT_KEY ) . '%';
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $like ) );
-
-		$timeout_like = $wpdb->esc_like( '_transient_timeout_' . self::TRANSIENT_KEY ) . '%';
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $timeout_like ) );
-
-		// Bug #2 fix: prefixes must include the 'v190_' infix that matches set_transient() calls.
-		$like_links = $wpdb->esc_like( '_transient_mlcgp_v190_gallery_url_' ) . '%';
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $like_links ) );
-		$like_links_timeout = $wpdb->esc_like( '_transient_timeout_mlcgp_v190_gallery_url_' ) . '%';
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $like_links_timeout ) );
-
-		$like_album = $wpdb->esc_like( '_transient_mlcgp_v190_album_base_' ) . '%';
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $like_album ) );
-		$like_album_timeout = $wpdb->esc_like( '_transient_timeout_mlcgp_v190_album_base_' ) . '%';
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s", $like_album_timeout ) );
 	}
 }

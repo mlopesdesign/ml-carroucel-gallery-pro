@@ -10,6 +10,32 @@ with this file.
 
 ---
 
+## [1.10.13] - 2026-07-26
+
+### Fixed
+- Carrossel preso a um único álbum na origem "todas": o resultado das galerias recentes era descartado e substituído pela listagem do álbum que continha a galeria mais nova.
+- Ordenação por criação passa a usar `g.id DESC`; `created_at` vazio jogava galerias novas para o fim da lista.
+- Cache inoperante em instalações com object cache persistente (Redis/Memcached): a leitura ia à tabela `wp_options` enquanto a escrita ia ao object cache.
+- Invalidação de cache não surtia efeito com object cache ativo (o `DELETE ... LIKE` não alcança o object cache).
+- Risco de recursão infinita quando uma página candidata do resolvedor de links continha o próprio shortcode.
+- Resultados negativos de resolução de link não eram cacheados, reexecutando toda a resolução a cada visita.
+- Carrossel vazio sob concorrência quando o lock de reconstrução não era obtido e não havia cache.
+- Consultas duplicadas de capa por galeria e refazimento da consulta de páginas candidatas por galeria.
+- `save_post` invalidava o cache em autosaves e revisões.
+
+### Changed
+- Invalidação de cache passa a usar geração incremental (`mlcgp_cache_version`), válida com e sem object cache.
+
+### Removed
+- Código morto do resolvedor de links (`resolve_gallery_url_from_site_render`, `find_rendered_gallery_url_across_public_posts`, `get_root_album_ids_for_gallery`, `walk_album_ancestors_to_roots`, `get_album_base_url_by_id`, `resolve_album_permalink_from_content`, `normalize_public_url`).
+
+### Compatibility
+- Resolvedor de link nativo do ML Gallery Pro preservado.
+- Origem por álbum mantém a ordem manual `sort_order ASC, id ASC` do ML Gallery Pro.
+- Shortcodes, perfis, capas, títulos, datas, admin UI, licenciamento e updater GitHub inalterados.
+
+---
+
 ## [1.10.12] - 2026-07-02
 
 ### Fixed
