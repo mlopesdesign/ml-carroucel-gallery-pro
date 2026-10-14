@@ -17,7 +17,7 @@ Set-Location $root
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { Write-Error "[release] Versao invalida"; exit 1 }
 $tag = "v$Version"
-$zipName = "ml-carroucel-gallery-pro-v$Version.zip"
+$zipName = "ml-carousel-gallery-pro-v$Version.zip"
 $distZip = Join-Path $root "dist\$zipName"
 $changesReadme = Join-Path $root "ml-carousel-gallery-pro\readme.txt"
 

@@ -23,7 +23,7 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 $headerVer = (Select-String -Path $pluginFile -Pattern '^\s*\*\s*Version:\s*(\S+)' | Select-Object -First 1).Matches.Groups[1].Value
 if ($headerVer -ne $Version) { Write-Error "[package] header ($headerVer) != requested ($Version)"; exit 1 }
 
-$zipName = "ml-carroucel-gallery-pro-v$Version.zip"
+$zipName = "ml-carousel-gallery-pro-v$Version.zip"
 $zipPath = Join-Path $distDir $zipName
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }

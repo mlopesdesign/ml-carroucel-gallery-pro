@@ -3,13 +3,13 @@
  * Plugin Name: ML Carousel Gallery Pro
  * Plugin URI: https://mlopesdesign.com/
  * Description: Carousel horizontal de galerias do ML Gallery Pro com autoplay, swipe mobile e links nativos de album/galeria.
- * Version: 1.10.13
+ * Version: 1.10.14
  * Author: Mlopesdesign
  * Author URI: https://mlopesdesign.com/
  * Text Domain: ml-carousel-gallery-pro
  * Requires at least: 6.0
  * Requires PHP: 7.4
- * Update URI: https://github.com/mlopesdesign/ml-carroucel-gallery-pro
+ * Update URI: https://github.com/mlopesdesign/ml-carousel-gallery-pro-releases
  *
  * @package MLCarouselGalleryPro
  */
@@ -18,7 +18,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MLCGP_VERSION', '1.10.13' );
+define( 'MLCGP_VERSION', '1.10.14' );
 define( 'MLCGP_FILE', __FILE__ );
 define( 'MLCGP_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MLCGP_URL', plugin_dir_url( __FILE__ ) );
@@ -38,7 +38,7 @@ register_activation_hook(
 	__FILE__,
 	static function () {
 		delete_site_transient( 'update_plugins' );
-		delete_site_transient( 'mlcgp_github_latest_release_' . md5( 'mlopesdesign|ml-carroucel-gallery-pro,ml-carousel-gallery-pro,ml-carrousel-gallery-pro' ) );
+		delete_site_transient( 'mlcgp_github_latest_release_' . md5( 'mlopesdesign|ml-carousel-gallery-pro-releases|' . MLCGP_VERSION ) );
 	}
 );
 
@@ -49,10 +49,11 @@ add_action(
 			MLCGP_FILE,
 			MLCGP_VERSION,
 			'mlopesdesign',
+			// Atualizacoes vem do repositorio publico de releases: o codigo-fonte passou a ser
+			// privado e a API do GitHub responde 404 para repositorio privado sem token.
+			// A lista antiga tinha 3 nomes (2 inexistentes = 2 chamadas 404 a cada verificacao).
 			[
-				'ml-carroucel-gallery-pro',
-				'ml-carousel-gallery-pro',
-				'ml-carrousel-gallery-pro',
+				'ml-carousel-gallery-pro-releases',
 			]
 		);
 		$mlcgp_github_updater->boot();
