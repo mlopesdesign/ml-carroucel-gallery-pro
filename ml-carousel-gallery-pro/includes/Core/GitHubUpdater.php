@@ -108,7 +108,7 @@ final class GitHubUpdater {
 		}
 
 		$remote_version = $this->normalize_version( (string) ( $release['tag_name'] ?? '' ) );
-		if ( '' === $remote_version || ! version_compare( $remote_version, $this->current_version, '>' ) ) {
+		if ( '' === $remote_version ) {
 			return $transient;
 		}
 
@@ -118,23 +118,44 @@ final class GitHubUpdater {
 		}
 
 		$repository = $this->selected_repository ?: $this->get_primary_repository();
-		$update     = (object) [
-			'id'          => $this->plugin_basename,
-			'slug'        => dirname( $this->plugin_basename ),
-			'plugin'      => $this->plugin_basename,
-			'new_version' => $remote_version,
-			'url'         => $this->get_repository_url( $repository ),
-			'package'     => $package,
-			'tested'      => (string) ( $release['tested'] ?? '' ),
-			'requires'    => '6.0',
-			'requires_php'=> '7.4',
+		$item       = (object) [
+			'id'            => $this->plugin_basename,
+			'slug'          => dirname( $this->plugin_basename ),
+			'plugin'        => $this->plugin_basename,
+			'new_version'   => $remote_version,
+			'url'           => $this->get_repository_url( $repository ),
+			'package'       => $package,
+			'icons'         => $this->get_icons(),
+			'banners'       => [],
+			'banners_rtl'   => [],
+			'tested'        => '6.8',
+			'requires'      => '6.0',
+			'requires_php'  => '7.4',
+			'compatibility' => new \stdClass(),
 		];
+
+		// Sem versao nova: registra em no_update. Antes o plugin simplesmente sumia do transient,
+		// e o WordPress nao exibia o estado correto nem o controle de atualizacao automatica.
+		if ( ! version_compare( $remote_version, $this->current_version, '>' ) ) {
+			$item->new_version = $this->current_version;
+			if ( ! isset( $transient->no_update ) || ! is_array( $transient->no_update ) ) {
+				$transient->no_update = [];
+			}
+			$transient->no_update[ $this->plugin_basename ] = $item;
+			if ( isset( $transient->response[ $this->plugin_basename ] ) ) {
+				unset( $transient->response[ $this->plugin_basename ] );
+			}
+			return $transient;
+		}
 
 		if ( ! isset( $transient->response ) || ! is_array( $transient->response ) ) {
 			$transient->response = [];
 		}
 
-		$transient->response[ $this->plugin_basename ] = $update;
+		$transient->response[ $this->plugin_basename ] = $item;
+		if ( isset( $transient->no_update[ $this->plugin_basename ] ) ) {
+			unset( $transient->no_update[ $this->plugin_basename ] );
+		}
 
 		return $transient;
 	}
@@ -173,8 +194,9 @@ final class GitHubUpdater {
 			'homepage'      => $this->get_repository_url( $repository ),
 			'requires'      => '6.0',
 			'requires_php'  => '7.4',
-			'tested'        => '',
+			'tested'        => '6.8',
 			'download_link' => $this->get_release_zip_asset_url( $release, $version ),
+			'icons'         => $this->get_icons(),
 			'sections'      => [
 				'description' => 'Professional WordPress carousel plugin for ML Gallery Pro.',
 				'changelog'   => $body ?: 'Release notes available on GitHub.',
@@ -234,6 +256,11 @@ final class GitHubUpdater {
 			$this->selected_repository = (string) $cached['repository'];
 			return $this->latest_release;
 		}
+		// Falha recente (sem rede, 404, rate limit): nao repetir a consulta a cada carregamento
+		// do painel; tenta de novo quando o cache negativo expirar.
+		if ( is_array( $cached ) && ! empty( $cached['failed'] ) ) {
+			return null;
+		}
 
 		$best_release    = null;
 		$best_repository = null;
@@ -268,6 +295,8 @@ final class GitHubUpdater {
 				],
 				5 * MINUTE_IN_SECONDS
 			);
+		} else {
+			set_site_transient( $cache_key, [ 'failed' => true ], 10 * MINUTE_IN_SECONDS );
 		}
 
 		return $this->latest_release;
@@ -319,10 +348,14 @@ final class GitHubUpdater {
 	 */
 	private function get_release_zip_asset_url( array $release, string $version ): string {
 		$assets = isset( $release['assets'] ) && is_array( $release['assets'] ) ? $release['assets'] : [];
+		// O nome do pacote deriva do SLUG (pasta do plugin), nunca do nome do repositorio.
+		// Antes aceitava variantes do nome do repo e, sem achar, QUALQUER .zip da release,
+		// o que podia instalar um arquivo errado se a release tivesse mais de um ZIP.
+		// Nome fixo: mesmo se o site instalou o plugin numa pasta com outro nome.
+		$slug   = 'ml-carousel-gallery-pro';
 		$wanted = [
-			'ml-carousel-gallery-pro-v' . $version . '.zip',
-			'ml-carrousel-gallery-pro-v' . $version . '.zip',
-			'ml-carroucel-gallery-pro-v' . $version . '.zip',
+			$slug . '-v' . $version . '.zip',
+			$slug . '-' . $version . '.zip',
 		];
 
 		foreach ( $assets as $asset ) {
@@ -333,29 +366,28 @@ final class GitHubUpdater {
 			$name = (string) ( $asset['name'] ?? '' );
 			$url  = (string) ( $asset['browser_download_url'] ?? '' );
 
-			if ( '' === $url ) {
-				continue;
-			}
-
-			if ( in_array( $name, $wanted, true ) ) {
-				return esc_url_raw( $url );
-			}
-		}
-
-		foreach ( $assets as $asset ) {
-			if ( ! is_array( $asset ) ) {
-				continue;
-			}
-
-			$name = (string) ( $asset['name'] ?? '' );
-			$url  = (string) ( $asset['browser_download_url'] ?? '' );
-
-			if ( '' !== $url && '.zip' === substr( strtolower( $name ), -4 ) ) {
+			if ( '' !== $url && in_array( $name, $wanted, true ) ) {
 				return esc_url_raw( $url );
 			}
 		}
 
 		return '';
+	}
+
+	/**
+	 * Plugin icons for the WordPress updates screen.
+	 *
+	 * Sem icones o WordPress mostra o icone generico na tela de atualizacoes.
+	 *
+	 * @return array<string,string>
+	 */
+	private function get_icons(): array {
+		$base = plugin_dir_url( $this->plugin_file ) . 'assets/images/';
+		return [
+			'1x'      => $base . 'icon-128x128.png',
+			'2x'      => $base . 'icon-256x256.png',
+			'default' => $base . 'icon-256x256.png',
+		];
 	}
 
 	/**
@@ -379,7 +411,7 @@ final class GitHubUpdater {
 	 * @return string
 	 */
 	private function get_primary_repository(): string {
-		return $this->repositories[0] ?? 'ml-carroucel-gallery-pro';
+		return $this->repositories[0] ?? 'ml-carousel-gallery-pro-releases';
 	}
 
 	/**

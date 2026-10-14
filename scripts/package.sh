@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package build (Linux/CI). Produces dist/ml-carroucel-gallery-pro-vX.Y.Z.zip
+# Package build (Linux/CI). Produces dist/ml-carousel-gallery-pro-vX.Y.Z.zip
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +22,7 @@ fi
 # Sync check
 bash "$SCRIPT_DIR/sync-version.sh"
 
-zip_name="ml-carroucel-gallery-pro-v${VERSION}.zip"
+zip_name="ml-carousel-gallery-pro-v${VERSION}.zip"
 zip_path="$DIST_DIR/$zip_name"
 
 mkdir -p "$DIST_DIR"

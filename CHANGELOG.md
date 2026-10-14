@@ -10,6 +10,19 @@ with this file.
 
 ---
 
+## [1.10.14] - 2026-10-14
+
+### Changed
+- Atualizacoes vem do repositorio publico `ml-carousel-gallery-pro-releases` (release ponte; o codigo-fonte sera privado).
+- `GitHubUpdater`: aceita somente `ml-carousel-gallery-pro-v{versao}.zip` (ou `-{versao}.zip`), sem fallback para qualquer ZIP.
+- `GitHubUpdater`: preenche `no_update` quando nao ha versao nova e envia `icons` no transient e no `plugins_api`.
+- Uma unica consulta ao GitHub por verificacao (lista antiga tinha 2 repositorios inexistentes).
+- Scripts de empacotamento geram `ml-carousel-gallery-pro-vX.Y.Z.zip` (nome derivado do slug).
+
+### Added
+- `uninstall.php`: limpa somente caches e transients; `mlcgp_settings` e `mlcgp_license_state` preservados.
+- Icones `assets/images/icon-128x128.png` e `icon-256x256.png`.
+
 ## [1.10.13] - 2026-07-26
 
 ### Fixed

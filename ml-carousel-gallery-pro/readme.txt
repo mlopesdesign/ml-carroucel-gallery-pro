@@ -2,9 +2,9 @@ ML Carousel Gallery Pro
 Contributors: mlopesdesign
 Tags: gallery, carousel, slider, ml-gallery-pro
 Requires at least: 6.0
-Tested up to: 6.5
+Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.10.13
+Stable tag: 1.10.14
 License: GPLv2 or later
 
 Carousel horizontal de galerias do ML Gallery Pro com autoplay, swipe mobile e links diretos.
@@ -29,6 +29,12 @@ Exibe as galerias mais recentes do ML Gallery Pro em um carousel horizontal com:
 4. Use o shortcode [ml_carousel_gallery] em qualquer página.
 
 == Changelog ==
+
+= 1.10.14 =
+* Atualizacoes passam a vir do repositorio publico de releases (ml-carousel-gallery-pro-releases).
+* Motor de atualizacao: aceita somente o ZIP com o slug do plugin, informa "sem atualizacao" ao WordPress (no_update) e envia os icones do plugin.
+* Uma unica consulta ao GitHub por verificacao (antes eram 3, duas delas com erro 404).
+* Novo uninstall.php: limpa apenas caches e transients; configuracoes e licenca sao preservadas.
 
 = 1.10.13 =
 * Corrige o carrossel travado num único álbum: a origem "todas" voltou a listar as galerias mais recentes.
