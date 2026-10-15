@@ -4,7 +4,7 @@ Tags: gallery, carousel, slider, ml-gallery-pro
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.10.14
+Stable tag: 1.11.0
 License: GPLv2 or later
 
 Carousel horizontal de galerias do ML Gallery Pro com autoplay, swipe mobile e links diretos.
@@ -29,6 +29,13 @@ Exibe as galerias mais recentes do ML Gallery Pro em um carousel horizontal com:
 4. Use o shortcode [ml_carousel_gallery] em qualquer página.
 
 == Changelog ==
+
+= 1.11.0 =
+* Licença passa a ser emitida e conferida pelo site tools.mlopesdesign.com.br. Antes o status e o plano eram escolhidos à mão na própria tela (qualquer um se dava licença) e o endpoint configurável nunca era usado.
+* 1 licença = 1 site. Teste grátis de 30 dias por site (reinstalar não reinicia a contagem).
+* Sem teste ou licença válidos, salvar configurações e atualizar capas fica travado. Os carrosséis publicados continuam no ar e nenhum dado é apagado.
+* Aba Licença refeita: ativar chave, começar teste, conferir, liberar este site e comprar.
+* A resposta do servidor vem assinada; sem internet o site continua liberado por até 7 dias.
 
 = 1.10.14 =
 * Atualizacoes passam a vir do repositorio publico de releases (ml-carousel-gallery-pro-releases).

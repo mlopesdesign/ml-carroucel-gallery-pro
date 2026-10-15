@@ -92,3 +92,16 @@ body.admin-bar #mlpb-toast-area{top:50px}
 .mlcgp-item-link{font-size:.75rem;color:#0ea5e9;text-decoration:none;margin-top:auto}
 .mlcgp-item-link:hover{text-decoration:underline}
 .mlpb-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+
+/* 1.11.0 — Licença pelo site tools.mlopesdesign.com.br */
+.mlcgp-license-lock{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 18px;padding:16px 18px;border:1px solid #f1d9a8;border-left:6px solid #c78512;border-radius:16px;background:#fffaf0}
+.mlcgp-license-lock div{display:grid;gap:4px}
+.mlcgp-license-lock strong{color:var(--mlpb-ink);font-size:14px}
+.mlcgp-license-lock span{color:#52606d;font-size:13px;line-height:1.5}
+.mlcgp-license-lock .button{flex:0 0 auto}
+.mlcgp-license-form{margin:0}
+.mlpb-card-header .mlcgp-license-chip.is-full{background:#dff3e7;border-color:#bfe5cd;color:#116444}
+.mlpb-card-header .mlcgp-license-chip.is-trial{background:#fff3d8;border-color:#f1d9a8;color:#7a5410}
+.mlpb-card-header .mlcgp-license-chip.is-free{background:#eef3f8;color:#31516e}
+.mlpb-actions .mlcgp-license-form{display:inline-flex}
+@media (max-width:782px){.mlcgp-license-lock{flex-direction:column;align-items:stretch}}

@@ -3,7 +3,7 @@
  * Plugin Name: ML Carousel Gallery Pro
  * Plugin URI: https://mlopesdesign.com/
  * Description: Carousel horizontal de galerias do ML Gallery Pro com autoplay, swipe mobile e links nativos de album/galeria.
- * Version: 1.10.14
+ * Version: 1.11.0
  * Author: Mlopesdesign
  * Author URI: https://mlopesdesign.com/
  * Text Domain: ml-carousel-gallery-pro
@@ -18,13 +18,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MLCGP_VERSION', '1.10.14' );
+define( 'MLCGP_VERSION', '1.11.0' );
 define( 'MLCGP_FILE', __FILE__ );
 define( 'MLCGP_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MLCGP_URL', plugin_dir_url( __FILE__ ) );
 define( 'MLCGP_OPTION_KEY', 'mlcgp_settings' );
 
 require_once MLCGP_DIR . 'includes/Admin/Helpers.php';
+require_once MLCGP_DIR . 'includes/class-ml-license-client.php';
 require_once MLCGP_DIR . 'includes/Admin/License.php';
 require_once MLCGP_DIR . 'includes/Admin/Settings.php';
 require_once MLCGP_DIR . 'includes/Admin/AdminUI.php';
@@ -39,6 +40,14 @@ register_activation_hook(
 	static function () {
 		delete_site_transient( 'update_plugins' );
 		delete_site_transient( 'mlcgp_github_latest_release_' . md5( 'mlopesdesign|ml-carousel-gallery-pro-releases|' . MLCGP_VERSION ) );
+	}
+);
+
+// 1.11.0: ao desativar, para a renovação diária da licença (o estado salvo é mantido).
+register_deactivation_hook(
+	__FILE__,
+	static function () {
+		wp_clear_scheduled_hook( 'mllc_ml_carousel_gallery_pro_refresh' );
 	}
 );
 
