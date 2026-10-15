@@ -41,6 +41,8 @@ final class Plugin {
 	}
 
 	public function boot(): void {
+		// Instancia o cliente de licença cedo para agendar a renovação diária.
+		$this->license_manager->client();
 		add_action( 'admin_menu', [ $this, 'register_admin_menu' ] );
 		add_action( 'admin_init', [ $this->settings_manager, 'register_settings' ] );
 		add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_assets' ] );
@@ -98,6 +100,10 @@ final class Plugin {
 		}
 
 		check_admin_referer( 'mlcgp_save_settings' );
+		// 1.11.0: sem teste/licença válidos, a edição fica travada (o carrossel publicado segue no ar).
+		if ( $this->license_manager->is_locked() ) {
+			$this->redirect_with_toast( 'license', 'Ative a licença (ou comece o teste grátis) para salvar as configurações.', 'error' );
+		}
 		$raw       = isset( $_POST['mlcgp_settings'] ) ? wp_unslash( $_POST['mlcgp_settings'] ) : [];
 		$sanitized = $this->settings_manager->sanitize( is_array( $raw ) ? $raw : [] );
 		update_option( MLCGP_OPTION_KEY, $sanitized, false );
@@ -110,10 +116,37 @@ final class Plugin {
 		}
 
 		check_admin_referer( 'mlcgp_save_license' );
-		$raw   = isset( $_POST['mlcgp_license'] ) ? wp_unslash( $_POST['mlcgp_license'] ) : [];
-		$state = $this->license_manager->save( is_array( $raw ) ? $raw : [] );
-		$message = ! empty( $state['message'] ) ? (string) $state['message'] : 'Licença salva com sucesso.';
-		$this->redirect_with_toast( 'license', $message, 'success' );
+		$op = isset( $_POST['mlcgp_license_op'] ) ? sanitize_key( wp_unslash( (string) $_POST['mlcgp_license_op'] ) ) : '';
+
+		switch ( $op ) {
+			case 'activate':
+				$key    = isset( $_POST['mlcgp_license_key'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['mlcgp_license_key'] ) ) : '';
+				$result = $this->license_manager->activate( $key );
+				$ok_msg = 'Licença ativada neste site.';
+				break;
+			case 'trial':
+				$result = $this->license_manager->start_trial();
+				$ok_msg = 'Teste grátis de 30 dias iniciado.';
+				break;
+			case 'check':
+				$result = $this->license_manager->check();
+				$ok_msg = 'Licença conferida.';
+				break;
+			case 'deactivate':
+				$this->license_manager->deactivate();
+				$result = true;
+				$ok_msg = 'Este site foi liberado. A chave já pode ser ativada em outro site.';
+				break;
+			default:
+				$result = new \WP_Error( 'bad_request', 'Ação de licença inválida.' );
+				$ok_msg = '';
+		}
+
+		if ( is_wp_error( $result ) ) {
+			$this->redirect_with_toast( 'license', $result->get_error_message(), 'error' );
+		}
+
+		$this->redirect_with_toast( 'license', $ok_msg, 'success' );
 	}
 
 	public function handle_refresh_covers(): void {
@@ -122,6 +155,9 @@ final class Plugin {
 		}
 
 		check_ajax_referer( 'mlcgp_refresh_covers' );
+		if ( $this->license_manager->is_locked() ) {
+			wp_send_json_error( [ 'message' => 'Ative a licença (ou comece o teste grátis) para usar esta ação.' ], 403 );
+		}
 		$this->carousel->invalidate_cache();
 		wp_send_json_success( [ 'message' => 'Capas atualizadas.' ] );
 	}

@@ -10,6 +10,17 @@ with this file.
 
 ---
 
+## [1.11.0] - 2026-10-15
+
+### Changed
+- Licenciamento pelo site tools.mlopesdesign.com.br (`ML_License_Client_V2`, `includes/class-ml-license-client.php`); 1 licença = 1 site; teste grátis de 30 dias.
+- Trava: sem teste/licença válidos, `admin_post_mlcgp_save_settings` e `mlcgp_refresh_covers` são recusados; o front-end segue igual.
+- Aba Licença refeita; faixa de aviso no topo quando travado. Option antiga `mlcgp_license_state` preservada.
+
+### Fixed
+- A tela antiga deixava escolher status/plano à mão e salvava como licença ativa sem conferir nada.
+- O formulário da aba Licença não fechava (`</form>` ausente).
+
 ## [1.10.14] - 2026-10-14
 
 ### Changed

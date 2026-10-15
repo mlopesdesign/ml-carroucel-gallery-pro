@@ -3,7 +3,7 @@
  * Desinstalacao do ML Carousel Gallery Pro.
  *
  * Remove somente dados descartaveis (caches e transients com prefixo mlcgp_).
- * Configuracoes (mlcgp_settings) e licenca (mlcgp_license_state) sao preservadas
+ * Configuracoes (mlcgp_settings) e licenca (mlcgp_license_state e mllc_ml_carousel_gallery_pro) sao preservadas
  * de proposito: o cliente pode reinstalar sem perder ajustes nem reativar a licenca.
  *
  * @package MLCarouselGalleryPro
@@ -33,6 +33,9 @@ function mlcgp_uninstall_clear_cache() {
 	// Com cache persistente (Redis/Memcached) as entradas nao podem ser listadas; avancar a
 	// geracao invalida todas de uma vez e evita servir cache velho numa reinstalacao.
 	update_option( 'mlcgp_cache_version', max( 1, (int) get_option( 'mlcgp_cache_version', 1 ) ) + 1, false );
+
+	// Renovação diária da licença (o estado da licença é preservado para a reinstalação).
+	wp_clear_scheduled_hook( 'mllc_ml_carousel_gallery_pro_refresh' );
 }
 
 if ( is_multisite() ) {

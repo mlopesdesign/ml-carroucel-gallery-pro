@@ -14,7 +14,6 @@ final class AdminUI {
 		$album_options   = $settings_manager->get_album_options_public();
 		$gallery_options = $settings_manager->get_gallery_options_public();
 		$license_state   = $license_manager->get_state();
-		$license_config  = $license_manager->get_runtime_config();
 		$preview_items   = $carousel->get_admin_preview_items();
 		$tabs            = [ 'dashboard' => 'Dashboard', 'operation' => 'Operação', 'settings' => 'Configurações', 'items' => 'Itens', 'license' => 'Licença' ];
 		if ( ! isset( $tabs[ $active_tab ] ) ) {
@@ -38,7 +37,7 @@ final class AdminUI {
 					<div class="mlpb-hero-tags">
 						<span class="mlpb-chip">Mesmo slug</span>
 						<span class="mlpb-chip">Multi carousel</span>
-						<span class="mlpb-chip"><?php echo esc_html( $license_manager->get_plan_label( (string) $license_state['plan'] ) ); ?></span>
+						<span class="mlpb-chip"><?php echo esc_html( 'Licença: ' . (string) $license_state['label'] ); ?></span>
 					</div>
 				</div>
 			</section>
@@ -49,12 +48,22 @@ final class AdminUI {
 				<?php endforeach; ?>
 			</nav>
 
+			<?php if ( $license_state['locked'] && 'license' !== $active_tab ) : ?>
+				<div class="mlcgp-license-lock">
+					<div>
+						<strong><?php echo esc_html( $license_state['can_start_trial'] ? 'Comece o teste grátis de 30 dias' : 'Licença necessária' ); ?></strong>
+						<span><?php echo esc_html( (string) $license_state['message'] ); ?></span>
+					</div>
+					<a class="button button-primary" href="<?php echo esc_url( add_query_arg( [ 'page' => 'ml-carousel-gallery-pro', 'tab' => 'license' ], admin_url( 'admin.php' ) ) ); ?>"><?php echo esc_html( $license_state['can_start_trial'] ? 'Começar teste' : 'Ativar licença' ); ?></a>
+				</div>
+			<?php endif; ?>
+
 			<section id="mlpb-tab-dashboard" class="mlpb-tab-panel <?php echo 'dashboard' === $active_tab ? 'is-active' : ''; ?>" <?php echo 'dashboard' === $active_tab ? '' : 'hidden'; ?>>
 				<div class="mlpb-summary-grid">
 					<article class="mlpb-summary-card"><span class="mlpb-summary-label">Shortcode base</span><strong>[ml_carousel_gallery]</strong><small>Base global do carousel.</small></article>
 					<article class="mlpb-summary-card"><span class="mlpb-summary-label">Profiles ativos</span><strong><?php echo esc_html( (string) count( $profiles ) ); ?></strong><small>Shortcodes múltiplos por ID.</small></article>
 					<article class="mlpb-summary-card"><span class="mlpb-summary-label">Data no card</span><strong><?php echo ! empty( $settings['show_date'] ) ? 'Ativa' : 'Oculta'; ?></strong><small>Somente por máscara no título.</small></article>
-					<article class="mlpb-summary-card"><span class="mlpb-summary-label">Licença</span><strong><?php echo esc_html( $license_manager->get_status_label( (string) $license_state['status'] ) ); ?></strong><small><?php echo esc_html( $license_manager->get_plan_label( (string) $license_state['plan'] ) ); ?></small></article>
+					<article class="mlpb-summary-card"><span class="mlpb-summary-label">Licença</span><strong><?php echo esc_html( (string) $license_state['label'] ); ?></strong><small><?php echo esc_html( $license_state['active'] ? ( (string) $license_state['plan_label'] . ( '' !== $license_state['expires_label'] ? ' · até ' . $license_state['expires_label'] : '' ) ) : '1 site por licença' ); ?></small></article>
 				</div>
 
 				<div class="mlpb-grid">
@@ -70,13 +79,13 @@ final class AdminUI {
 						<div class="mlpb-note">A opção de exibir data agora apenas mostra ou oculta a data extraída do título. Se o título não tiver data, o card fica sem data.</div>
 					</article>
 					<article class="mlpb-card">
-						<div class="mlpb-card-header"><div><h2>Núcleo comercial</h2><p class="mlpb-muted">Product ID, endpoint e textos centralizados.</p></div></div>
+						<div class="mlpb-card-header"><div><h2>Licença</h2><p class="mlpb-muted">Emitida e conferida pelo site tools.mlopesdesign.com.br.</p></div></div>
 						<ul class="mlpb-list">
-							<li><strong>Product ID:</strong> <?php echo esc_html( (string) $license_config['product_id'] ); ?></li>
-							<li><strong>Endpoint:</strong> <?php echo '' !== (string) $license_config['endpoint'] ? esc_html( (string) $license_config['endpoint'] ) : 'Não configurado'; ?></li>
-							<li><strong>Item:</strong> <?php echo esc_html( (string) $license_config['item_name'] ); ?></li>
-							<li><strong>Status:</strong> <?php echo esc_html( $license_manager->get_status_label( (string) $license_state['status'] ) ); ?></li>
+							<li><strong>Estado:</strong> <?php echo esc_html( (string) $license_state['label'] ); ?></li>
+							<li><strong>Plano:</strong> <?php echo esc_html( (string) $license_state['plan_label'] ); ?></li>
+							<li><strong>Uso:</strong> 1 site por licença</li>
 						</ul>
+						<div class="mlpb-note"><?php echo esc_html( (string) $license_state['message'] ); ?></div>
 					</article>
 				</div>
 			</section>
@@ -286,43 +295,58 @@ final class AdminUI {
 			</section>
 
 			<section id="mlpb-tab-license" class="mlpb-tab-panel <?php echo 'license' === $active_tab ? 'is-active' : ''; ?>" <?php echo 'license' === $active_tab ? '' : 'hidden'; ?>>
-				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-					<input type="hidden" name="action" value="mlcgp_save_license">
-					<?php wp_nonce_field( 'mlcgp_save_license' ); ?>
-					<div class="mlpb-grid">
-						<article class="mlpb-card">
-							<div class="mlpb-card-header"><div><h2><?php echo esc_html( (string) $license_config['cta_title'] ); ?></h2><p class="mlpb-muted"><?php echo esc_html( (string) $license_config['cta_text'] ); ?></p></div></div>
-							<div class="mlpb-form-grid">
-								<div class="mlpb-field"><label>Serial</label><input type="text" name="mlcgp_license[serial]" value="<?php echo esc_attr( (string) $license_state['serial'] ); ?>"></div>
-								<div class="mlpb-field"><label>E-mail</label><input type="text" name="mlcgp_license[email]" value="<?php echo esc_attr( (string) $license_state['email'] ); ?>"></div>
-								<div class="mlpb-field"><label>Status</label><select name="mlcgp_license[status]"><option value="inactive" <?php selected( 'inactive', $license_state['status'] ); ?>>Inativo</option><option value="active" <?php selected( 'active', $license_state['status'] ); ?>>Ativo</option><option value="expired" <?php selected( 'expired', $license_state['status'] ); ?>>Expirado</option><option value="blocked" <?php selected( 'blocked', $license_state['status'] ); ?>>Bloqueado</option></select></div>
-								<div class="mlpb-field"><label>Plano</label><select name="mlcgp_license[plan]"><option value="free" <?php selected( 'free', $license_state['plan'] ); ?>>Free</option><option value="trial" <?php selected( 'trial', $license_state['plan'] ); ?>>Trial</option><option value="full" <?php selected( 'full', $license_state['plan'] ); ?>>Full</option><option value="lifetime" <?php selected( 'lifetime', $license_state['plan'] ); ?>>Lifetime</option></select></div>
+				<?php /* 1.11.0: licença pelo site tools.mlopesdesign.com.br. A tela antiga deixava escolher status e plano à mão. */ ?>
+				<div class="mlpb-grid">
+					<article class="mlpb-card">
+						<div class="mlpb-card-header"><div><h2>Licença</h2><p class="mlpb-muted">A licença vale para 1 site. Sem licença, os carrosséis publicados continuam no ar; só a edição fica travada.</p></div><span class="mlpb-chip mlcgp-license-chip is-<?php echo esc_attr( (string) $license_state['tone'] ); ?>"><?php echo esc_html( (string) $license_state['label'] ); ?></span></div>
+						<div class="mlpb-note"><?php echo esc_html( (string) $license_state['message'] ); ?></div>
+						<?php if ( ! $license_state['active'] || $license_state['is_trial'] ) : ?>
+							<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mlcgp-license-form">
+									<input type="hidden" name="action" value="mlcgp_save_license">
+									<?php wp_nonce_field( 'mlcgp_save_license' ); ?>
+								<input type="hidden" name="mlcgp_license_op" value="activate">
+								<div class="mlpb-field" style="margin-top:16px;"><label for="mlcgp-license-key">Chave da licença</label><input type="text" id="mlcgp-license-key" name="mlcgp_license_key" value="" placeholder="ML-XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" required></div>
+								<p class="mlpb-muted"><?php echo esc_html( $license_state['is_trial'] ? 'Já comprou? Cole a chave para trocar o teste pela licença.' : 'Cole a chave que você recebeu por e-mail após a compra.' ); ?></p>
+								<div class="mlpb-actions"><button type="submit" class="button button-primary">Ativar licença</button><a class="button" href="<?php echo esc_url( \MLCarouselGalleryPro\Admin\License::BUY_URL ); ?>" target="_blank" rel="noopener">Comprar licença</a></div>
+							</form>
+						<?php endif; ?>
+						<?php if ( $license_state['can_start_trial'] ) : ?>
+							<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mlcgp-license-form">
+									<input type="hidden" name="action" value="mlcgp_save_license">
+									<?php wp_nonce_field( 'mlcgp_save_license' ); ?>
+								<input type="hidden" name="mlcgp_license_op" value="trial">
+								<div class="mlpb-actions" style="margin-top:12px;"><button type="submit" class="button">Começar teste grátis de 30 dias</button></div>
+							</form>
+						<?php endif; ?>
+						<?php if ( $license_state['active'] && ! $license_state['is_trial'] ) : ?>
+							<div class="mlpb-actions" style="margin-top:16px;">
+								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mlcgp-license-form">
+									<input type="hidden" name="action" value="mlcgp_save_license">
+									<?php wp_nonce_field( 'mlcgp_save_license' ); ?>
+									<input type="hidden" name="mlcgp_license_op" value="check">
+									<button type="submit" class="button">Conferir agora</button>
+								</form>
+								<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mlcgp-license-form">
+									<input type="hidden" name="action" value="mlcgp_save_license">
+									<?php wp_nonce_field( 'mlcgp_save_license' ); ?>
+									<input type="hidden" name="mlcgp_license_op" value="deactivate">
+									<button type="submit" class="button" onclick="return window.confirm('Liberar este site? O ML Carousel Gallery Pro fica travado aqui até você ativar uma licença de novo.');">Liberar este site</button>
+								</form>
 							</div>
-							<div class="mlpb-field"><label>Expira em</label><input type="text" name="mlcgp_license[expires_at]" value="<?php echo esc_attr( (string) $license_state['expires_at'] ); ?>" placeholder="YYYY-MM-DD"></div>
-						</article>
-						<article class="mlpb-card">
-							<div class="mlpb-card-header"><div><h2>Status atual</h2><p class="mlpb-muted">Persistência real do estado comercial.</p></div></div>
-							<ul class="mlpb-list">
-								<li><strong>Status:</strong> <?php echo esc_html( $license_manager->get_status_label( (string) $license_state['status'] ) ); ?></li>
-								<li><strong>Plano:</strong> <?php echo esc_html( $license_manager->get_plan_label( (string) $license_state['plan'] ) ); ?></li>
-								<li><strong>Última checagem:</strong> <?php echo esc_html( (string) $license_state['last_check'] ); ?></li>
-								<li><strong>Instância:</strong> <code><?php echo esc_html( (string) $license_state['instance_id'] ); ?></code></li>
-							</ul>
-							<div class="mlpb-note"><?php echo esc_html( (string) $license_state['message'] ); ?></div>
-						</article>
-						<article class="mlpb-card mlcgp-full-span">
-							<div class="mlpb-card-header"><div><h2>Núcleo de licença</h2><p class="mlpb-muted">Configuração centralizada para comercialização, mantida apenas nesta aba.</p></div></div>
-							<div class="mlpb-form-grid">
-								<div class="mlpb-field"><label>Product ID</label><input type="text" name="mlcgp_settings[license_product_id]" value="<?php echo esc_attr( (string) ( $settings['license_product_id'] ?? '' ) ); ?>"></div>
-								<div class="mlpb-field"><label>Endpoint</label><input type="url" name="mlcgp_settings[license_endpoint]" value="<?php echo esc_attr( (string) ( $settings['license_endpoint'] ?? '' ) ); ?>"></div>
-								<div class="mlpb-field"><label>Nome do item</label><input type="text" name="mlcgp_settings[license_item_name]" value="<?php echo esc_attr( (string) ( $settings['license_item_name'] ?? '' ) ); ?>"></div>
-								<div class="mlpb-field"><label>Seller</label><input type="text" name="mlcgp_settings[license_seller_name]" value="<?php echo esc_attr( (string) ( $settings['license_seller_name'] ?? '' ) ); ?>"></div>
-							</div>
-							<div class="mlpb-field"><label>Título comercial</label><input type="text" name="mlcgp_settings[license_cta_title]" value="<?php echo esc_attr( (string) ( $settings['license_cta_title'] ?? '' ) ); ?>"></div>
-							<div class="mlpb-field"><label>Texto comercial</label><textarea name="mlcgp_settings[license_cta_text]"><?php echo esc_textarea( (string) ( $settings['license_cta_text'] ?? '' ) ); ?></textarea></div>
-						</article>
-
-					</div>
+						<?php endif; ?>
+					</article>
+					<article class="mlpb-card">
+						<div class="mlpb-card-header"><div><h2>Situação</h2><p class="mlpb-muted">Conferida pelo site tools.mlopesdesign.com.br.</p></div></div>
+						<ul class="mlpb-list">
+							<li><strong>Estado:</strong> <?php echo esc_html( (string) $license_state['label'] ); ?></li>
+							<li><strong>Plano:</strong> <?php echo esc_html( (string) $license_state['plan_label'] ); ?></li>
+							<?php if ( $license_state['active'] ) : ?><li><strong><?php echo esc_html( $license_state['is_trial'] ? 'Teste até' : 'Validade' ); ?>:</strong> <?php echo esc_html( '' !== $license_state['expires_label'] ? (string) $license_state['expires_label'] : 'Sem vencimento' ); ?></li><?php endif; ?>
+							<?php if ( '' !== $license_state['key_masked'] ) : ?><li><strong>Chave:</strong> <code><?php echo esc_html( (string) $license_state['key_masked'] ); ?></code></li><?php endif; ?>
+							<li><strong>Uso:</strong> 1 site por licença</li>
+						</ul>
+						<div class="mlpb-note">Vai trocar de site? Use "Liberar este site" e ative a mesma chave no site novo. Suas licenças ficam em <a href="<?php echo esc_url( \MLCarouselGalleryPro\Admin\License::ACCOUNT_URL ); ?>" target="_blank" rel="noopener">Minha conta</a>.</div>
+					</article>
+				</div>
 			</section>
 
 		</div>
